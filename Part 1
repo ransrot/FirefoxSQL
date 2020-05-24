@@ -1,0 +1,146 @@
+import sqlite3
+import time
+import os
+import platform
+import argparse
+import re
+
+def get_platform():
+	return platform.system()
+
+class Parser:
+	def __init__(self):
+		self.args = argparse.ArgumentParser()
+		self.args.add_argument("--cookie", help="View cookies", action='store_true')
+		self.args.add_argument("--history", help="View the history", action='store_true')
+		self.args.add_argument("--form", help="View the form history", action='store_true')
+		self.args.add_argument("--history-google", help="View the google searches", action='store_true')
+
+		self.parse_args = self.args.parse_args()
+
+	def return_dict_args(self):
+		dict_args = vars(self.parse_args)
+		return [key for key, value in dict_args.items() if value]
+
+class FireFox:
+	def __init__(self):
+		self.firefox_folder = "/root/.mozilla"
+
+	def firefox_sqlite_db(self, value):
+		if not os.path.exists(self.firefox_folder):
+			print("[-] Could not find firefox folder exiting")
+			exit()
+
+		for root, dirs, files in os.walk(self.firefox_folder):
+			for file in files:
+				if file.endswith(".sqlite"):
+					combine_dir = root + "/" + file
+					combine_dir = combine_dir.split("/")
+					if combine_dir[5].startswith(value):
+						yield "/".join(combine_dir)
+
+	def firefox_db_values(self, value):
+		get_sqlite_files = self.firefox_sqlite_db(value)
+
+		for file in get_sqlite_files:
+			split_files = file.split("/")
+			last_index = split_files[-1]
+
+			if last_index.startswith(value):
+				return file
+			else:
+				return "[-] Not found"
+
+
+class DataBase(FireFox):
+	def __init__(self):
+		super().__init__()
+
+	def connection(self, data_base, select_from, time, *args):
+		db = self.firefox_db_values(data_base)
+		conn = sqlite3.connect(db)
+		c = conn.cursor()
+		try:
+			if time:
+				c.execute("SELECT datetime({}/1000000, 'unixepoch'), {} FROM {}".format(time, ", ".join(args), select_from))
+			else:
+				c.execute("SELECT {} FROM {}".format(", ".join(args), select_from))
+		except sqlite3.OperationalError:
+			print("[-] Invalid Values")
+			exit()
+		return c.fetchall()
+
+	def firefox_cookies(self):
+		cookie_db = self.connection("cookie", "moz_cookies", "lastAccessed", "host")
+		
+		for value in cookie_db:
+			time = value[0].strip()
+			url = value[1].strip()
+			print(f"{url} : {time}")
+		return
+
+	def firefox_history(self, google=False):
+		get_google = Parser().return_dict_args()
+
+		if "history_google" in get_google:
+			google = True
+
+		history_db = self.connection("places", "moz_places", "last_visit_date", "url")
+		
+		for value in history_db:
+			last_visit = value[0].strip()
+			url = value[1].strip()
+
+			if not google:
+				if "google" in url:
+					continue
+				print(f"URL: {url} : {last_visit}")
+			else:
+				if "google" in url and "search" in url:
+					url = url.split("firefox")[-1]
+					url = url.split("=")[-1]
+					if "+" not in url:
+						print(f"Search: {url} : {last_visit}")
+					else:
+						url = url.split("+")
+						url = " ".join(url)
+						print(f"Search: {url} : {last_visit}")
+		return
+
+	def firefox_form_history(self):
+		form_db = self.connection("form", "moz_formhistory", None, "value", "fieldname", "timesUsed")
+		
+		for value in form_db:
+			user_info = value[0].strip()
+			field_name = value[1].strip()
+			times_used = value[2]
+			print(f"{field_name} : {user_info} | Used: {times_used}")
+		return
+
+def main():
+	data_base = DataBase()
+
+	return {
+		"cookie": data_base.firefox_cookies,
+		"history": data_base.firefox_history,
+		"history_google": data_base.firefox_history,
+		"form": data_base.firefox_form_history
+	}
+
+
+if __name__ == '__main__':
+	get_os = get_platform()
+	get_dict_args = Parser().return_dict_args()
+	main_dict = main()
+	
+	if not get_os == "Linux":
+		print("[-] Unsupported OS")
+		exit()
+
+	if not get_dict_args:
+		print("[-] Type -h for help")
+		exit()
+
+	for value in get_dict_args:
+		if value in main_dict:
+			main_dict[value]()
